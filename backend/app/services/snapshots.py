@@ -73,6 +73,44 @@ def apply_optimistic_update(
     return instance
 
 
+def bump_project_draft(
+    db: Session,
+    project: Project,
+    *,
+    expected_version: int | None = None,
+    actor: str = "surveyor",
+    action: str = "revise",
+    entity_type: str | None = None,
+    entity_id: int | None = None,
+    detail: dict[str, Any] | None = None,
+) -> int:
+    """Advance the project-wide optimistic draft version.
+
+    The project version guards the whole draft: any surveyor revision (datum
+    creation, observation/datum/rule patch, weight rule, bulk import) invalidates
+    prechecks performed against the older draft. When ``expected_version`` is
+    supplied it must match, otherwise a 409 ``optimistic_lock_conflict`` is raised.
+    """
+    actual = int(project.lock_version)
+    if expected_version is not None and actual != int(expected_version):
+        raise StaleDraftError("project", int(expected_version), actual)
+    project.lock_version = actual + 1
+    db.flush()
+    db.add(
+        AuditEvent(
+            entity_type=entity_type or "project",
+            entity_id=int(entity_id if entity_id is not None else project.id),
+            action=action,
+            expected_version=int(expected_version if expected_version is not None else actual),
+            lock_version_in=actual,
+            lock_version_out=actual + 1,
+            actor=actor,
+            after=_jsonable(detail) if detail is not None else None,
+        )
+    )
+    return project.lock_version
+
+
 def _jsonable(value: Any) -> Any:
     from decimal import Decimal
 

@@ -59,3 +59,24 @@ class SubmitJobIn(BaseModel):
 
 class PublishIn(BaseModel):
     confirm: bool = True
+
+
+class DatumPrecheckIn(BaseModel):
+    """Read-only datum precheck request: locate component and check constraints."""
+
+    point_code: str
+    elevation_m: float
+    sigma_m: float = Field(default=0.001, gt=0)
+
+
+class DatumCreateIn(BaseModel):
+    """Confirmed datum creation; still gated by the optimistic draft version.
+
+    ``lock_version`` is the project draft version returned by the precheck. A
+    precheck performed against an older draft fails confirmation with 409.
+    """
+
+    point_code: str
+    elevation_m: float
+    sigma_m: float = Field(default=0.001, gt=0)
+    lock_version: int | None = None

@@ -4,6 +4,7 @@ import { api, type Job, type ResidualRow } from './lib/api';
 import { NetworkGraph } from './components/NetworkGraph';
 import { StageTracker } from './components/StageTracker';
 import { ResidualTable } from './components/ResidualTable';
+import { DatumPrecheckPanel } from './components/DatumPrecheckPanel';
 import './styles.css';
 
 export default function App() {
@@ -29,6 +30,12 @@ export default function App() {
   }, [job]);
 
   const cyElements = useMemo(() => elements, [elements]);
+
+  function reloadTopology() {
+    api<{ nodes: unknown[]; edges: unknown[] }>(`/api/projects/${projectId}/topology`)
+      .then((data) => setElements([...(data.nodes as ElementDefinition[]), ...(data.edges as ElementDefinition[])]))
+      .catch((error) => setMessage(error.message));
+  }
 
   async function submitSnapshot() {
     setMessage('创建不可变快照并提交唯一任务代次...');
@@ -120,6 +127,12 @@ export default function App() {
             <p>提交快照后显示代次和阶段进度。</p>
           )}
         </div>
+      </section>
+
+      <section className="card">
+        <h2>基准设置预检（只读，不触发求解）</h2>
+        <p>输入拟新增测点、高程及精度，后端按当前草稿拓扑定位连通分量、列出现有基准并检查潜在冲突；确认时仍走乐观锁修订 API。</p>
+        <DatumPrecheckPanel projectId={projectId} onConfirmed={reloadTopology} />
       </section>
 
       {residuals.length > 0 && (

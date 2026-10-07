@@ -20,8 +20,17 @@ curl -fsS -X POST "$BASE/api/projects/$project_id/import" -H 'Content-Type: appl
   ]
 }'
 
-curl -fsS -X POST "$BASE/api/projects/$project_id/datums?point_code=BM-A&elevation_m=100&sigma_m=0.0001"
-curl -fsS -X POST "$BASE/api/projects/$project_id/datums?point_code=BM-B&elevation_m=103.001&sigma_m=0.0001"
+precheck_a=$(curl -fsS -X POST "$BASE/api/projects/$project_id/datums/precheck" -H 'Content-Type: application/json' \
+  -d '{"point_code":"BM-A","elevation_m":100,"sigma_m":0.0001}')
+draft_version=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["draft_lock_version"])' <<<"$precheck_a")
+curl -fsS -X POST "$BASE/api/projects/$project_id/datums" -H 'Content-Type: application/json' \
+  -d "{\"point_code\":\"BM-A\",\"elevation_m\":100,\"sigma_m\":0.0001,\"lock_version\":$draft_version}" >/dev/null
+
+precheck_b=$(curl -fsS -X POST "$BASE/api/projects/$project_id/datums/precheck" -H 'Content-Type: application/json' \
+  -d '{"point_code":"BM-B","elevation_m":103.001,"sigma_m":0.0001}')
+draft_version=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["draft_lock_version"])' <<<"$precheck_b")
+curl -fsS -X POST "$BASE/api/projects/$project_id/datums" -H 'Content-Type: application/json' \
+  -d "{\"point_code\":\"BM-B\",\"elevation_m\":103.001,\"sigma_m\":0.0001,\"lock_version\":$draft_version}" >/dev/null
 curl -fsS -X POST "$BASE/api/projects/$project_id/weight-rules?name=mm-sqrt-km" \
   -H 'Content-Type: application/json' \
   -d '{"rule":{"method":"millimeter_sqrt_km","c_km":1.0,"base_sigma_m":0.001}}'

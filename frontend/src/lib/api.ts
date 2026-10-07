@@ -38,3 +38,58 @@ export interface ResidualRow {
   correction_m: number | null;
   residual: number | null;
 }
+
+export type DatumPrecheckVerdict =
+  | 'datumless_can_add'
+  | 'compatible'
+  | 'conflict'
+  | 'existing_inconsistency'
+  | 'indeterminate';
+
+export interface DatumConflict {
+  kind: 'same_point_datum' | 'network_implied_elevation' | 'existing_inconsistency';
+  point_id?: number;
+  point_code?: string | null;
+  existing_datum_id?: number;
+  declared_m?: number;
+  existing_m?: number;
+  implied_m?: number;
+  residual_m?: number;
+  threshold_m?: number;
+  sigma_m?: number;
+  status?: string;
+  contradictions?: unknown[];
+  anchor_datums?: Array<{ point_id: number; point_code: string | null; elevation_m: number }>;
+}
+
+export interface ExistingDatum {
+  id?: number;
+  point_id: number;
+  point_code: string | null;
+  elevation_m: number;
+  sigma_m: number;
+}
+
+export interface DatumPrecheck {
+  project_id: number;
+  draft_lock_version: number;
+  verdict: DatumPrecheckVerdict;
+  risk_level: 'info' | 'warning' | 'danger';
+  message: string;
+  conflicts: DatumConflict[];
+  existing_datums: ExistingDatum[];
+  component: {
+    index: number;
+    point_count: number;
+    observation_count: number;
+    datum_count: number;
+    sample_points: string[];
+  };
+  candidate: {
+    point_id: number;
+    point_code: string | null;
+    elevation_m: number;
+    sigma_m: number;
+  };
+  diagnostic: Record<string, any>;
+}

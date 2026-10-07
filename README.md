@@ -96,6 +96,31 @@ curl -X PATCH http://localhost:8000/api/weight-rules/2 \
 
 版本冲突返回 HTTP 409，审计表 `audit_events` 保存前后值和版本递增链。
 
+除实体自身的 `lock_version` 外，每次草稿修订（导入、基准增改、测段/权重规则修订）还会推进项目级 `Project.lock_version`，作为整个草稿的乐观锁版本。
+
+## 基准设置预检（只读）
+
+新增基准前先做只读预检：以当前草稿拓扑定位候选点所属连通分量，列出现有基准，并把候选基准与“由其余基准经测线传播隐含的高程”做留一法比较（超过 3σ 判为明显矛盾）。预检不写基准、不生成快照、不作为正式求解结果：
+
+```bash
+curl -X POST http://localhost:8000/api/projects/1/datums/precheck \
+  -H 'Content-Type: application/json' \
+  -d '{"point_code":"P2","elevation_m":102.0,"sigma_m":0.001}'
+# verdict: datumless_can_add | compatible | conflict | existing_inconsistency | indeterminate
+```
+
+- `datumless_can_add`：所属分量没有基准（当前求解会 `blocked_rank_deficient`），候选点可补基准；
+- `conflict` / `existing_inconsistency`：给出风险与冲突残差，预检不保存任何数据；
+- 响应中的 `draft_lock_version` 把结论绑定到具体草稿版本。确认时仍走普通修订 API，预检后草稿被他人修改则确认返回 409：
+
+```bash
+curl -X POST http://localhost:8000/api/projects/1/datums \
+  -H 'Content-Type: application/json' \
+  -d '{"point_code":"P2","elevation_m":102.0,"sigma_m":0.001,"lock_version":7}'
+```
+
+预检与正式求解共用同一套基准矛盾判据：求解器对每个基准做留一法隐含高程比较，超过 3σ 返回 `blocked_datum_contradiction`，避免基准权重远大于观测权重时矛盾被联合平差残差“吸收”。
+
 ## 任务流程
 
 ```bash

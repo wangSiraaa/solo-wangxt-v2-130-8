@@ -34,4 +34,31 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .residual-table th:first-child, .residual-table td:first-child { text-align: left; }
 .residual-bad { color: #dc2626; font-weight: 700; }
 
-@media (max-width: 980px) { .grid { grid-template-columns: 1fr; } }
+.datum-precheck { display: flex; flex-direction: column; gap: 12px; }
+.precheck-form { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+.precheck-form button { align-self: end; }
+.precheck-error { padding: 10px 12px; background: #fee2e2; color: #b91c1c; border-radius: 6px; white-space: pre-wrap; }
+.precheck-ok { padding: 10px 12px; background: #dcfce7; color: #166534; border-radius: 6px; }
+.precheck-result { border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.precheck-result.risk-info { border-left: 4px solid #16a34a; background: #f0fdf4; }
+.precheck-result.risk-warning { border-left: 4px solid #f59e0b; background: #fffbeb; }
+.precheck-result.risk-danger { border-left: 4px solid #dc2626; background: #fef2f2; }
+.precheck-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.risk-badge { padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; color: white; }
+.risk-badge.risk-info { background: #16a34a; }
+.risk-badge.risk-warning { background: #f59e0b; }
+.risk-badge.risk-danger { background: #dc2626; }
+.precheck-version { color: #475569; font-size: 13px; }
+.precheck-message { margin: 0; }
+.precheck-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.precheck-cols h3 { margin: 0 0 6px; font-size: 14px; }
+.fact-list { margin: 0; padding-left: 18px; font-size: 13px; display: flex; flex-direction: column; gap: 3px; }
+.datum-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.datum-table th, .datum-table td { border-bottom: 1px solid #e2e8f0; padding: 5px 8px; text-align: right; }
+.datum-table th:first-child, .datum-table td:first-child { text-align: left; }
+.muted { color: #64748b; font-size: 13px; }
+.precheck-conflicts h3 { margin: 0 0 6px; font-size: 14px; color: #b91c1c; }
+.precheck-conflicts ul { margin: 0; padding-left: 18px; font-size: 13px; display: flex; flex-direction: column; gap: 6px; }
+.precheck-actions { display: flex; align-items: center; gap: 12px; }
+
+@media (max-width: 980px) { .grid, .precheck-cols { grid-template-columns: 1fr; } }

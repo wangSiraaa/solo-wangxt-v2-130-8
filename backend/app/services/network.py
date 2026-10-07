@@ -91,6 +91,9 @@ def _component_rows(
     datums: list[dict[str, Any]],
     component_weights: np.ndarray,
 ) -> tuple[list[int], list[int], sparse.csr_matrix, np.ndarray, np.ndarray, list[dict[str, Any]]]:
+    # ``component_weights`` is positionally aligned with ``component_observations``:
+    # callers slice the global weight vector per component instead of indexing it
+    # with a global source index.
     point_ids = [int(points[i]["id"]) for i in component_local_indices]
     local = {pid: i for i, pid in enumerate(point_ids)}
     obs_indices = [source_index for source_index, _obs in component_observations]
@@ -104,7 +107,7 @@ def _component_rows(
         cols.extend((local[int(obs["from_point_id"])], local[int(obs["to_point_id"])]))
         data.extend((-1.0, 1.0))
         b[row] = float(obs["observed_delta_m"])
-        weights[row] = component_weights[source_index]
+        weights[row] = component_weights[row]
 
     component_datums = [d for d in datums if int(d["point_id"]) in local and d.get("active", True)]
     datum_start = len(obs_indices)
@@ -118,6 +121,81 @@ def _component_rows(
         weights = np.append(weights, 1.0 / (sigma * sigma))
     A = sparse.coo_matrix((data, (rows, cols)), shape=(len(b), len(point_ids))).tocsr()
     return point_ids, obs_indices, A, b, weights, component_datums
+
+
+def implied_elevations(
+    component_local_indices: list[int],
+    points: list[dict[str, Any]],
+    component_observations: list[tuple[int, dict[str, Any]]],
+    datums: list[dict[str, Any]],
+    component_weights: np.ndarray,
+) -> dict[int, float] | None:
+    """Adjust the component with ``datums`` fixed, returning elevations keyed by point id.
+
+    This is a *diagnostic* evaluation only: callers use it to decide whether a
+    proposed (or existing) datum contradicts the rest of the network. It never
+    fabricates a datum-defect elevation — with no fixing datums the component is
+    vertically rank deficient and ``None`` is returned instead of a pseudo-solution.
+    """
+    if not datums:
+        return None
+    point_ids, _obs_indices, A, b, w, _component_datums = _component_rows(
+        component_local_indices, points, component_observations, datums, component_weights
+    )
+    W = sparse.diags(w)
+    N = (A.T @ W @ A).tocsc()
+    u = A.T @ (w * b)
+    try:
+        from scipy.sparse.linalg import spsolve
+
+        x = spsolve(N, u)
+    except (np.linalg.LinAlgError, RuntimeError, ValueError):
+        return None
+    if not np.all(np.isfinite(x)):
+        return None
+    return {int(pid): float(value) for pid, value in zip(point_ids, x)}
+
+
+def _datum_contradiction_diagnostics(
+    component_local_indices: list[int],
+    points: list[dict[str, Any]],
+    component_observations: list[tuple[int, dict[str, Any]]],
+    component_datums: list[dict[str, Any]],
+    component_weights: np.ndarray,
+    rank_tol: float,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Leave-one-datum-out contradiction check.
+
+    Each datum is held out in turn; the remaining datums fix the component and
+    imply an elevation at the held-out point. This exposes datum-vs-datum
+    contradictions even when datum rows vastly outweigh leveling observations,
+    where a joint-fit residual would simply absorb the error into the network.
+    """
+    diagnostics: list[dict[str, Any]] = []
+    contradictions: list[dict[str, Any]] = []
+    for index, datum in enumerate(component_datums):
+        others = component_datums[:index] + component_datums[index + 1 :]
+        implied = implied_elevations(
+            component_local_indices, points, component_observations, others, component_weights
+        )
+        if implied is None:
+            continue
+        implied_m = implied.get(int(datum["point_id"]))
+        if implied_m is None:
+            continue
+        declared_m = float(datum["elevation_m"])
+        sigma_m = max(float(datum.get("sigma_m", 0.001)), rank_tol)
+        entry = {
+            "point_id": int(datum["point_id"]),
+            "declared_m": declared_m,
+            "implied_m": implied_m,
+            "residual_m": declared_m - implied_m,
+            "sigma_m": float(datum.get("sigma_m", 0.001)),
+        }
+        diagnostics.append(entry)
+        if abs(entry["residual_m"]) > 3.0 * sigma_m:
+            contradictions.append(entry)
+    return diagnostics, contradictions
 
 
 def _condition_number(N: sparse.csr_matrix, estimate: bool) -> float | None:
@@ -279,9 +357,19 @@ def solve_component(
         }
         for i, datum in enumerate(component_datums)
     ]
-    datum_contradictions = [
-        d for d in datum_diagnostics if abs(d["residual_m"]) > 3.0 * max(d["sigma_m"], rank_tol)
-    ]
+    # A joint-fit datum residual can vanish when datum weights dominate the
+    # leveling observations; hold each datum out and compare the elevation
+    # implied by the remaining fixed datums instead.
+    leave_one_out, datum_contradictions = _datum_contradiction_diagnostics(
+        component_local_indices, points, component_observations, component_datums, weights[:m], rank_tol
+    )
+    implied_by_others = {entry["point_id"]: entry for entry in leave_one_out}
+    for entry, joint in zip(datum_diagnostics, datum_residual):
+        entry["joint_fit_residual_m"] = float(joint)
+        loo = implied_by_others.get(entry["point_id"])
+        if loo is not None:
+            entry["implied_m"] = loo["implied_m"]
+            entry["leave_one_out_residual_m"] = loo["residual_m"]
     if datum_contradictions:
         qr = {
             "method": "qr_diagnostic",
@@ -289,6 +377,7 @@ def solve_component(
             "reason": "weighted datum residual exceeds 3 sigma",
             "rank": rank,
             "nullity": 0,
+            "datum_residuals": leave_one_out,
             "datum_contradictions": datum_contradictions,
             "regularization": "none",
         }

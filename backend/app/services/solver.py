@@ -84,7 +84,7 @@ def execute_solve(db: Session, job: Job) -> dict[str, Any]:
                 points,
                 component_observations[index],
                 datums,
-                weights,
+                weights[[obs_index for obs_index, _obs in component_observations[index]]],
                 ill_threshold=settings.illconditioned_condition_number,
                 rank_tol=settings.qr_rank_tol,
                 dense_qr_max_rows=settings.dense_qr_max_rows,
