@@ -36,6 +36,41 @@ class StaleDraftError(HTTPException):
         )
 
 
+def ensure_draft_version(project: Project, expected_version: int | None) -> None:
+    """Reject a revision that was prepared against a stale draft.
+
+    ``project.lock_version`` is the draft version: every surveyor revision
+    (import, observation/datum/rule changes) bumps it, so a confirm built on a
+    pre-change precheck is refused with HTTP 409 instead of silently landing on
+    a different topology.
+    """
+    if expected_version is None:
+        return
+    actual = int(project.lock_version)
+    if actual != int(expected_version):
+        raise StaleDraftError("project", int(expected_version), actual)
+
+
+def bump_project_draft(db: Session, project: Project, *, actor: str = "surveyor", reason: str) -> Project:
+    """Advance the draft version and record the revision in the audit chain."""
+    actual = int(project.lock_version)
+    project.lock_version = actual + 1
+    db.add(
+        AuditEvent(
+            entity_type="project",
+            entity_id=project.id,
+            action="draft_revision",
+            expected_version=actual,
+            lock_version_in=actual,
+            lock_version_out=actual + 1,
+            actor=actor,
+            before={"lock_version": actual},
+            after={"lock_version": actual + 1, "reason": reason},
+        )
+    )
+    return project
+
+
 def apply_optimistic_update(
     db: Session,
     instance: T,

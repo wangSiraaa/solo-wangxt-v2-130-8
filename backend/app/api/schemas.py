@@ -53,6 +53,23 @@ class OptimisticRulePatch(BaseModel):
     active: bool | None = None
 
 
+class DatumPrecheckIn(BaseModel):
+    """Read-only datum placement precheck input. Never persisted."""
+
+    point_code: str
+    elevation_m: float
+    sigma_m: float = Field(default=0.001, gt=0)
+
+
+class DatumCreateIn(BaseModel):
+    """Datum creation is a draft revision and must carry the draft version."""
+
+    point_code: str
+    elevation_m: float
+    sigma_m: float = Field(default=0.001, gt=0)
+    lock_version: int
+
+
 class SubmitJobIn(BaseModel):
     resume: bool = False
 

@@ -38,3 +38,35 @@ export interface ResidualRow {
   correction_m: number | null;
   residual: number | null;
 }
+
+export interface DatumCheck {
+  datum_id: number;
+  point_id: number;
+  point_code?: string;
+  declared_elevation_m: number;
+  sigma_m: number;
+  implied_candidate_elevation_m: number;
+  discrepancy_m: number;
+  tolerance_m: number;
+  within_tolerance: boolean;
+}
+
+export type DatumAssessment = 'fills_datum_gap' | 'consistent' | 'contradiction_risk';
+
+export interface DatumPrecheckResponse {
+  read_only: boolean;
+  notice: string;
+  candidate: { point_code: string; point_id: number; elevation_m: number; sigma_m: number };
+  assessment: DatumAssessment;
+  component: {
+    index: number;
+    point_count: number;
+    observation_count: number;
+    datum_count: number;
+    isolated: boolean;
+  };
+  existing_datums: DatumCheck[];
+  conflicts: DatumCheck[];
+  datum_already_on_point: boolean;
+  draft_lock_version: number;
+}

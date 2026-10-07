@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.api.schemas import (
     BulkImportIn,
+    DatumCreateIn,
+    DatumPrecheckIn,
     OptimisticDatumPatch,
     OptimisticObservationPatch,
     OptimisticRulePatch,
@@ -27,7 +29,15 @@ from app.models.schema import (
     ObservationResult,
     ComponentResult,
 )
-from app.services.snapshots import apply_optimistic_update, create_immutable_snapshot, ensure_single_generation
+from app.services.datum_precheck import precheck_datum_candidate
+from app.services.snapshots import (
+    _serialize_project_state,
+    apply_optimistic_update,
+    bump_project_draft,
+    create_immutable_snapshot,
+    ensure_draft_version,
+    ensure_single_generation,
+)
 from app.workers.tasks import build_pipeline
 
 router = APIRouter(prefix="/api")
@@ -38,6 +48,17 @@ def _get(db: Session, model, entity_id: int):
     if obj is None:
         raise HTTPException(404, f"{model.__name__} {entity_id} not found")
     return obj
+
+
+@router.get("/projects/{project_id}")
+def project_detail(project_id: int, db: Session = Depends(get_db)):
+    project = _get(db, Project, project_id)
+    return {
+        "id": project.id,
+        "code": project.code,
+        "name": project.name,
+        "lock_version": project.lock_version,
+    }
 
 
 @router.post("/projects", status_code=201)
@@ -86,7 +107,7 @@ def bulk_import(project_id: int, payload: BulkImportIn, db: Session = Depends(ge
             )
         )
     db.add_all(observations)
-    project.lock_version += 1
+    bump_project_draft(db, project, reason="bulk_import")
     try:
         db.commit()
     except IntegrityError:
@@ -95,25 +116,75 @@ def bulk_import(project_id: int, payload: BulkImportIn, db: Session = Depends(ge
     return {"points_created": created_points, "observations_created": len(observations)}
 
 
-@router.post("/projects/{project_id}/datums", status_code=201)
-def add_datum(project_id: int, point_code: str, elevation_m: float, sigma_m: float = 0.001, db: Session = Depends(get_db)):
-    _get(db, Project, project_id)
-    point = db.scalar(select(Point).where(Point.project_id == project_id, Point.code == point_code))
+@router.post("/projects/{project_id}/datum-precheck")
+def datum_precheck(project_id: int, payload: DatumPrecheckIn, db: Session = Depends(get_db)):
+    """Read-only screening of a candidate datum against the current draft.
+
+    Locates the candidate's connected component and checks the declared
+    elevation against the component's known datums. Nothing is persisted and
+    no adjustment is computed; confirming the datum still requires the
+    optimistic-lock datum API with the returned ``draft_lock_version``.
+    """
+    project = _get(db, Project, project_id)
+    point = db.scalar(select(Point).where(Point.project_id == project_id, Point.code == payload.point_code))
     if point is None:
-        raise HTTPException(404, f"point {point_code} not found")
-    datum = Datum(project_id=project_id, point_id=point.id, elevation_m=elevation_m, sigma_m=sigma_m)
+        raise HTTPException(404, f"point {payload.point_code} not found")
+
+    draft = _serialize_project_state(project_id, db)["payload"]
+    rule = draft["weight_rules"][0]["rule"] if draft["weight_rules"] else None
+    report = precheck_datum_candidate(
+        points=draft["points"],
+        observations=draft["observations"],
+        datums=draft["datums"],
+        candidate_point_id=point.id,
+        elevation_m=payload.elevation_m,
+        sigma_m=payload.sigma_m,
+        rule=rule,
+    )
+    point_codes = {p["id"]: p["code"] for p in draft["points"]}
+    for check in report["existing_datums"] + report["conflicts"]:
+        check["point_code"] = point_codes.get(check["point_id"])
+
+    return {
+        "read_only": True,
+        "notice": "预检为只读筛查：不保存数据、不替代整体平差；确认仍须携带当前草稿版本走乐观锁 API。",
+        "candidate": {
+            "point_code": point.code,
+            "point_id": point.id,
+            "elevation_m": payload.elevation_m,
+            "sigma_m": payload.sigma_m,
+        },
+        "draft_lock_version": project.lock_version,
+        **report,
+    }
+
+
+@router.post("/projects/{project_id}/datums", status_code=201)
+def add_datum(project_id: int, payload: DatumCreateIn, db: Session = Depends(get_db)):
+    project = _get(db, Project, project_id)
+    # The precheck never saves; this confirm path is the only way a candidate
+    # becomes a datum, and it is refused if the draft moved on since.
+    ensure_draft_version(project, payload.lock_version)
+    point = db.scalar(select(Point).where(Point.project_id == project_id, Point.code == payload.point_code))
+    if point is None:
+        raise HTTPException(404, f"point {payload.point_code} not found")
+    datum = Datum(project_id=project_id, point_id=point.id, elevation_m=payload.elevation_m, sigma_m=payload.sigma_m)
     db.add(datum)
+    db.flush()
+    bump_project_draft(db, project, reason=f"add_datum:{point.code}")
     db.commit()
-    return {"id": datum.id, "lock_version": datum.lock_version}
+    return {"id": datum.id, "lock_version": datum.lock_version, "draft_lock_version": project.lock_version}
 
 
 @router.post("/projects/{project_id}/weight-rules", status_code=201)
 def add_weight_rule(project_id: int, name: str, rule: dict, db: Session = Depends(get_db)):
-    _get(db, Project, project_id)
+    project = _get(db, Project, project_id)
     model = WeightRule(project_id=project_id, name=name, rule=rule)
     db.add(model)
+    db.flush()
+    bump_project_draft(db, project, reason=f"add_weight_rule:{name}")
     db.commit()
-    return {"id": model.id, "lock_version": model.lock_version}
+    return {"id": model.id, "lock_version": model.lock_version, "draft_lock_version": project.lock_version}
 
 
 @router.patch("/observations/{observation_id}")
@@ -121,6 +192,7 @@ def patch_observation(observation_id: int, payload: OptimisticObservationPatch, 
     obs = _get(db, Observation, observation_id)
     changes = payload.model_dump(exclude={"lock_version"}, exclude_none=True)
     apply_optimistic_update(db, obs, changes, expected_version=payload.lock_version)
+    bump_project_draft(db, _get(db, Project, obs.project_id), reason=f"update_observation:{obs.id}")
     db.commit()
     return {"id": obs.id, "lock_version": obs.lock_version}
 
@@ -130,6 +202,7 @@ def patch_datum(datum_id: int, payload: OptimisticDatumPatch, db: Session = Depe
     datum = _get(db, Datum, datum_id)
     changes = payload.model_dump(exclude={"lock_version"}, exclude_none=True)
     apply_optimistic_update(db, datum, changes, expected_version=payload.lock_version)
+    bump_project_draft(db, _get(db, Project, datum.project_id), reason=f"update_datum:{datum.id}")
     db.commit()
     return {"id": datum.id, "lock_version": datum.lock_version}
 
@@ -139,6 +212,7 @@ def patch_weight_rule(rule_id: int, payload: OptimisticRulePatch, db: Session = 
     rule = _get(db, WeightRule, rule_id)
     changes = payload.model_dump(exclude={"lock_version"}, exclude_none=True)
     apply_optimistic_update(db, rule, changes, expected_version=payload.lock_version)
+    bump_project_draft(db, _get(db, Project, rule.project_id), reason=f"update_weight_rule:{rule.id}")
     db.commit()
     return {"id": rule.id, "lock_version": rule.lock_version}
 

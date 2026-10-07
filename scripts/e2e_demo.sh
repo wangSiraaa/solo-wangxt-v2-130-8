@@ -20,8 +20,17 @@ curl -fsS -X POST "$BASE/api/projects/$project_id/import" -H 'Content-Type: appl
   ]
 }'
 
-curl -fsS -X POST "$BASE/api/projects/$project_id/datums?point_code=BM-A&elevation_m=100&sigma_m=0.0001"
-curl -fsS -X POST "$BASE/api/projects/$project_id/datums?point_code=BM-B&elevation_m=103.001&sigma_m=0.0001"
+# 基准设置预检（只读）：先定位候选所属分量并筛查基准矛盾，不保存任何数据
+curl -fsS -X POST "$BASE/api/projects/$project_id/datum-precheck" -H 'Content-Type: application/json' \
+  -d '{"point_code":"BM-A","elevation_m":100,"sigma_m":0.0001}' | python3 -m json.tool
+
+# 确认新增基准走乐观锁修订 API：携带当前草稿版本，过期返回 409
+draft_version=$(curl -fsS "$BASE/api/projects/$project_id" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lock_version"])')
+curl -fsS -X POST "$BASE/api/projects/$project_id/datums" -H 'Content-Type: application/json' \
+  -d "{\"point_code\":\"BM-A\",\"elevation_m\":100,\"sigma_m\":0.0001,\"lock_version\":$draft_version}"
+draft_version=$(curl -fsS "$BASE/api/projects/$project_id" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lock_version"])')
+curl -fsS -X POST "$BASE/api/projects/$project_id/datums" -H 'Content-Type: application/json' \
+  -d "{\"point_code\":\"BM-B\",\"elevation_m\":103.001,\"sigma_m\":0.0001,\"lock_version\":$draft_version}"
 curl -fsS -X POST "$BASE/api/projects/$project_id/weight-rules?name=mm-sqrt-km" \
   -H 'Content-Type: application/json' \
   -d '{"rule":{"method":"millimeter_sqrt_km","c_km":1.0,"base_sigma_m":0.001}}'

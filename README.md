@@ -96,6 +96,28 @@ curl -X PATCH http://localhost:8000/api/weight-rules/2 \
 
 版本冲突返回 HTTP 409，审计表 `audit_events` 保存前后值和版本递增链。
 
+`project.lock_version` 是草稿版本：导入、观测/基准/权重修订都会使其递增并留下 `draft_revision` 审计记录，因此任何“先查看、后确认”的流程都能发现草稿已被他人改动。
+
+## 基准设置预检
+
+新增基准前可先做一次**只读**预检：输入拟新增测点、高程及精度，后端按当前草稿拓扑定位所属连通分量，并把候选高程与分量内既有基准做 3σ 约束筛查（沿确定性生成树推算候选高程，方差含基准 σ、候选 σ 和路径观测 σ）。预检不保存任何数据、不产生平差结果，也不替代求解阶段的基准矛盾诊断。
+
+```bash
+curl -X POST http://localhost:8000/api/projects/1/datum-precheck \
+  -H 'Content-Type: application/json' \
+  -d '{"point_code":"BM-C","elevation_m":101.5,"sigma_m":0.001}'
+```
+
+返回 `assessment`（`fills_datum_gap` 可补基准 / `consistent` 一致 / `contradiction_risk` 矛盾风险）、所属分量、既有基准对照、潜在冲突和当前 `draft_lock_version`。
+
+确认新增仍走乐观锁修订 API，必须携带预检时的草稿版本；期间任何人修改草稿都会使确认被 409 拒绝：
+
+```bash
+curl -X POST http://localhost:8000/api/projects/1/datums \
+  -H 'Content-Type: application/json' \
+  -d '{"point_code":"BM-C","elevation_m":101.5,"sigma_m":0.001,"lock_version":4}'
+```
+
 ## 任务流程
 
 ```bash
@@ -147,6 +169,7 @@ cd backend && pytest -q
 | 不连通子网 | 分量预检当天列出点/边/基准数；无基准分量 QR 诊断阻塞，不拼接、不虚构连接 |
 | 多基准矛盾 | 基准作为带权行；超过 3σ 的基准残差触发 `blocked_datum_contradiction` |
 | 求解途中修订权重 | 旧 Job 继续绑定旧快照；新草稿必须生成新快照；旧任务完成后仅 `AUDITED_ONLY` |
+| 基准设置预检 | 只读定位分量并做 3σ 基准筛查；无基准分量显示可补基准；矛盾候选给出风险且不保存；确认携带草稿版本，过期 409 |
 | Worker 重启 | stage `confirmed_at` 作为恢复点；orchestrator 跳过已确认阶段 |
 | 重复提交 | `uq_job_generation` 保证项目+快照只有一个 Job 代次 |
 | 发布 | 核对闭合环、基准约束、改正数/残差统计、快照哈希、算法参数和 `regularization=none` |
